@@ -1,21 +1,22 @@
-# 纯 GitHub 方案（单仓库版）：使用仓库内 card-engine/ 的卡片渲染代码（源自 xiaohe，MIT）
-# -> 本地启动 express API -> 用与原 Vercel 完全相同的参数生成静态 SVG 到 cards/
-# -> 校验通过且有变化才提交。不依赖 Vercel，也不依赖外部仓库。
-name: Generate Stats Cards
+# 每日自动生成 Profile SVG 资产（Stats 双卡 + Streak 卡片 + 贪吃蛇深浅双色动画）
+# 并通过 peaceiris/actions-gh-pages 推送到独立的 output 分支，保持 main 分支提交历史干净。
+name: Generate Profile Assets
 
 on:
   push:
     branches: [main]
-    paths: [".github/workflows/generate-stats-cards.yml"] # 推送工作流本身时自动跑一次（首次启用即生成卡片）
+    paths:
+      - ".github/workflows/generate-stats-cards.yml"
+      - "card-engine/**"
   schedule:
-    - cron: "30 0 * * *" # 每天 UTC 0:30（北京时间 8:30）自动更新，与原卡片工作流错开
+    - cron: "30 0 * * *" # 每天 UTC 0:30（北京时间 8:30）自动更新
   workflow_dispatch: # 支持手动触发
 
 permissions:
   contents: write
 
 concurrency:
-  group: generate-stats-cards
+  group: generate-profile-assets
   cancel-in-progress: false
 
 env:
@@ -24,7 +25,7 @@ env:
 jobs:
   generate:
     runs-on: ubuntu-latest
-    name: render-svg-cards
+    name: build-profile-svgs
     steps:
       - name: Checkout profile repo
         uses: actions/checkout@v4
@@ -34,7 +35,7 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Install dependencies
+      - name: Install card-engine dependencies
         working-directory: card-engine
         run: npm ci
 
@@ -42,8 +43,6 @@ jobs:
         working-directory: card-engine
         env:
           PORT: 9000
-          # 卡片引擎的 retryer 只认 PAT_1 / PAT_2 ... 这样的环境变量名读取 GraphQL 凭证
-          # 默认 GITHUB_TOKEN 即可；如遇限流，创建经典 PAT（public repo 读取）存为 Secret CARDS_PAT
           PAT_1: ${{ secrets.CARDS_PAT || secrets.GITHUB_TOKEN }}
         run: |
           node express.js > server.log 2>&1 &
@@ -56,19 +55,24 @@ jobs:
             sleep 1
           done
 
-      - name: Render cards (与原 Vercel 参数完全一致)
+      - name: Render Tokyo Night stats & streak cards
         run: |
-          mkdir -p cards
+          mkdir -p dist
           base="http://127.0.0.1:9000"
-          curl -sf "${base}/api?username=${GH_USERNAME}&show_icons=true&locale=cn&hide_border=true&title_color=0052D9&icon_color=0052D9&text_color=333333&bg_color=00000000" \
-            -o cards/github-stats.svg
-          curl -sf "${base}/api/top-langs?username=${GH_USERNAME}&locale=cn&hide_border=true&title_color=0052D9&text_color=333333&bg_color=00000000" \
-            -o cards/top-langs.svg
+          # 1. 综合数据概览卡（Tokyo Night + 冰川蓝 #38BDF8 + 隐藏外边框 + #0D1117 深色背景）
+          curl -sf "${base}/api?username=${GH_USERNAME}&show_icons=true&theme=tokyonight&hide_border=true&bg_color=0D1117&title_color=38BDF8&icon_color=38BDF8" \
+            -o dist/github-stats.svg
+          # 2. 常用语言分布卡（Compact 紧凑布局 + Tokyo Night + 隐藏外边框 + #0D1117 深色背景）
+          curl -sf "${base}/api/top-langs?username=${GH_USERNAME}&layout=compact&langs_count=8&theme=tokyonight&hide_border=true&bg_color=0D1117&title_color=38BDF8" \
+            -o dist/top-langs.svg
+          # 3. 连续提交记录卡（Streak Stats，Tokyo Night + 隐藏外边框 + #0D1117 深色背景）
+          curl -sf "https://streak-stats.demolab.com?user=${GH_USERNAME}&theme=tokyonight&hide_border=true&background=0D1117&ring=38BDF8&fire=38BDF8&currStreakLabel=38BDF8" \
+            -o dist/streak-stats.svg
 
-      - name: Validate cards (失败时渲染的是错误卡片，直接报错不提交)
+      - name: Validate stats cards
         run: |
           set -e
-          for f in cards/*.svg; do
+          for f in dist/*.svg; do
             test -s "$f" || { echo "::error::$f is empty"; exit 1; }
             grep -q "<svg" "$f" || { echo "::error::$f is not SVG"; exit 1; }
             if grep -q "Something went wrong" "$f"; then
@@ -77,21 +81,26 @@ jobs:
               exit 1
             fi
           done
-          echo "All cards OK"
+          echo "All stats cards OK"
 
       - name: Stop local server
         if: always()
         run: |
           [ -f card-engine/server.pid ] && kill "$(cat card-engine/server.pid)" 2>/dev/null || true
 
-      - name: Commit cards if changed
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if [ -z "$(git status --porcelain -- cards/)" ]; then
-            echo "No changes, skipping commit"
-          else
-            git add cards/
-            git commit -m "chore: auto-update stats cards [skip ci]"
-            git push
-          fi
+      - name: Generate GitHub contribution snake animations (Light & Dark)
+        uses: Platane/snk/svg-only@v3
+        with:
+          github_user_name: ${{ github.repository_owner }}
+          outputs: |
+            dist/github-contribution-grid-snake.svg
+            dist/github-contribution-grid-snake-dark.svg?palette=github-dark
+
+      - name: Deploy SVG assets to isolated output branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dist
+          publish_branch: output
+          force_orphan: true
+          commit_message: "chore: update profile svg assets [skip ci]"
