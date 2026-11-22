@@ -39,7 +39,7 @@ const GRAPHQL_REPOS_QUERY = `
 `;
 
 const GRAPHQL_STATS_QUERY = `
-  query userInfo($login: String!, $after: String, $includeMergedPullRequests: Boolean!, $includeDiscussions: Boolean!, $includeDiscussionsAnswers: Boolean!, $startTime: DateTime = null) {
+  query userInfo($login: String!, $after: String, $includeDiscussions: Boolean!, $includeDiscussionsAnswers: Boolean!, $startTime: DateTime = null) {
     user(login: $login) {
       name
       login
@@ -114,7 +114,6 @@ const statsFetcher = async ({
       login: username,
       first: 100,
       after: endCursor,
-      includeMergedPullRequests,
       includeDiscussions,
       includeDiscussionsAnswers,
       startTime,
