@@ -46,18 +46,6 @@ const GRAPHQL_STATS_QUERY = `
       commits: contributionsCollection (from: $startTime) {
         totalCommitContributions,
       }
-      reviews: contributionsCollection {
-        totalPullRequestReviewContributions
-      }
-      repositoriesContributedTo(first: 1, contributionTypes: [COMMIT, ISSUE, PULL_REQUEST, REPOSITORY]) {
-        totalCount
-      }
-      pullRequests(first: 1) {
-        totalCount
-      }
-      mergedPullRequests: pullRequests(states: MERGED) @include(if: $includeMergedPullRequests) {
-        totalCount
-      }
       openIssues: issues(states: OPEN) {
         totalCount
       }
@@ -292,14 +280,25 @@ const fetchStats = async (
     stats.totalCommits = user.commits.totalCommitContributions;
   }
 
-  stats.totalPRs = user.pullRequests.totalCount;
-  if (include_merged_pull_requests) {
-    stats.totalPRsMerged = user.mergedPullRequests.totalCount;
-    stats.mergedPRsPercentage =
-      (user.mergedPullRequests.totalCount / user.pullRequests.totalCount) *
-        100 || 0;
+  // Fetch PRs via REST Search API so standard GITHUB_TOKEN in Actions works without PAT
+  try {
+    const prRes = await retryer(
+      (vars, token) =>
+        axios({
+          method: "get",
+          url: `https://api.github.com/search/issues?q=author:${vars.login}+type:pr`,
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `token ${token}`,
+          },
+        }),
+      { login: username },
+    );
+    stats.totalPRs = prRes.data.total_count || 0;
+  } catch {
+    stats.totalPRs = 0;
   }
-  stats.totalReviews = user.reviews.totalPullRequestReviewContributions;
+  stats.totalReviews = 0;
   stats.totalIssues = user.openIssues.totalCount + user.closedIssues.totalCount;
   if (include_discussions) {
     stats.totalDiscussionsStarted = user.repositoryDiscussions.totalCount;
@@ -308,7 +307,7 @@ const fetchStats = async (
     stats.totalDiscussionsAnswered =
       user.repositoryDiscussionComments.totalCount;
   }
-  stats.contributedTo = user.repositoriesContributedTo.totalCount;
+  stats.contributedTo = 0;
 
   // Retrieve stars while filtering out repositories to be hidden.
   const allExcludedRepos = [...exclude_repo, ...excludeRepositories];
